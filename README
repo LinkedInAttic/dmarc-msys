@@ -1,0 +1,14 @@
+DMARC-msys
+
+This set of scripts in Lua implements DMARC policy checking and reporting for the Message Systems MTA products, a popular extendable commercial MTA.
+
+They need to be added on momentum-receiving version of the product.
+
+DMARC, allows to authenticate a message using DKIM and SPF and project a policy for the receiving MTA to apply.
+
+This Lua implementation, process receiving emails, identify the author domain from the From: header look if the domain has published a DMARC policy and apply this policy to the email.
+
+It logs the information using momentum log facilities so that daily reports can be sent back to the author domain.
+
+full description of the spec: www.dmarc.org
+
