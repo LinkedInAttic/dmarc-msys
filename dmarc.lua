@@ -15,7 +15,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ]]
--- version 1.0
+-- version 1.1
 --
 
 --[[ This requires the dp_config.lua scripts to contain a dmarc entry
@@ -320,7 +320,15 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
       end
     end
   end 
-  
+ 
+  if real_pairs.p == nil then
+    real_pairs["p"] = "none"
+  end
+
+  if real_pairs.sp == nil then
+    real_pairs["sp"] = real_pairs.p
+  end 
+
   policy = policy_requested;
 
   if real_pairs.pct == nil then
@@ -368,8 +376,9 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
 
   -- let's log in paniclog because I don't know where else to log
   local report = "DMARC@"..tostring(msys.core.get_now_ts()).."@"..tostring(domain).."@"..ip_from_addr_and_port(tostring(ac.remote_addr))..
-                 "@"..tostring(real_pairs.adkim).."@"..tostring(real_pairs.aspf).."@"..tostring(policy_requested).."@"..tostring(real_pairs.pct)..
-                 "@"..tostring(policy).."@"..tostring(from_domain).."@SPF@"..tostring(envelope_domain).."@"..tostring(spf_status).."@DKIM";
+                 "@"..tostring(real_pairs.adkim).."@"..tostring(real_pairs.aspf).."@"..tostring(real_pairs.p).."@"..tostring(real_pairs.sp)..
+                 "@"..tostring(policy_requested).."@"..tostring(real_pairs.pct).."@"..tostring(policy).."@"..tostring(dmarc_dkim).."@"..tostring(dmarc_spf)..
+                 "@"..tostring(from_domain).."@SPF@"..tostring(envelope_domain).."@"..tostring(spf_status).."@DKIM";
 
   if debug then print("dkim_domains:"..tostring(vctx:get(msys.core.VCTX_MESS, "dkim_domains"))); end
   local found_dkim_domains = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "dkim_domains"), "\\s+");
@@ -414,7 +423,7 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
     return msys.core.VALIDATE_DONE;
   end
   
-  print("end of dmarc_work");
+  if debug then print("end of dmarc_work"); end
   return msys.core.VALIDATE_CONT;
 end
 
