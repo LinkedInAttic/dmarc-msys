@@ -15,6 +15,8 @@
 #WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #See the License for the specific language governing permissions and
 #limitations under the License.
+#
+# Version 1.1
 
 import sys
 from datetime import date
@@ -79,7 +81,13 @@ def dmarc_report_email(domain):
             for mail in rua:
               if mail[0:7]=="mailto:":
                 email=mail[7:]
-                (elocal,edomain)=email.split('@')
+		try: 
+                  (elocal,edomain)=email.split('@',1)
+                except ValueError:
+                  print 'email cannot be decoded: %s' % email
+                  edomain=""
+                  elocal=""
+                  pass
                 edomain=edomain.lower()
                 if edomain.find(domain) or edomain==domain:
                   emaillist.append(email)
@@ -131,8 +139,11 @@ for root, dirs, files in os.walk(directory):
     f = open(filename)
     for line in f:
       try:
-        (tag,timestamp,domain,ip,record) = line.split('@',4)
-	if tag == "DMARC" and not ip_isprivate(ip):
+        if line[0:6]=="DMARC1":
+          (tag,timestamp,msgid,domain,ip,record) = line.split('@',5)
+        else:
+          (tag,timestamp,domain,ip,record) = line.split('@',4)
+	if tag[0:5] == "DMARC" and not ip_isprivate(ip):
           record = ip+'@'+record
           if dicreport.has_key(domain):
              dicrecord=dicreport[domain]
@@ -203,9 +214,17 @@ for domain in dicreport:
     frep.write('     <source_ip>%s</source_ip>\n' % ip)
     frep.write('     <count>%s</count>\n' % dicrecord[record])
     frep.write('     <policy_evaluated>\n')
-    frep.write('       <disposition>%s</disposition>\n' % disposition)
+    if disposition!="reject" and disposition!="quarantine" and disposition!="none":
+      frep.write('       <disposition>none</disposition>\n')
+    else:
+      frep.write('       <disposition>%s</disposition>\n' % disposition)
     frep.write('       <dkim>%s</dkim>\n' % dmarc_dkim)
     frep.write('       <spf>%s</spf>\n' % dmarc_spf)
+    if disposition!="reject" and disposition!="quarantine" and disposition!="none":
+      frep.write('       <reason>\n')
+      frep.write('         <type>%s</type>\n' % disposition)
+      frep.write('         <comment></comment>\n')
+      frep.write('       </reason>\n')
     frep.write('     </policy_evaluated>\n')
     frep.write('   </row>\n')
     frep.write('   <identifiers>\n')
@@ -238,7 +257,7 @@ for domain in dicreport:
   #first compress
   zf = zipfile.ZipFile('%s/%s.zip' % (directory,filename), mode='w')
   try:
-    zf.write('%s/%s.xml' % (directory,filename), filename+'.xml')
+    zf.write('%s/%s.xml' % (directory,filename), filename+'.xml', zipfile.ZIP_DEFLATED)
   finally:
     zf.close()
  
@@ -259,3 +278,4 @@ for domain in dicreport:
     s = smtplib.SMTP('localhost')
     s.sendmail(report_from, email, msg.as_string())
     s.quit()
+

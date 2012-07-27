@@ -1,0 +1,18 @@
+CHANGELOG
+=========
+
+2012/07/27 - Franck Martin
+  - adding forensic reports capability
+  - moving some dmarc options in the dmarc config section in dp_config.lua
+  - various fixes related to handling sub domains
+  - issue #1 fixed: ec_dkim_domains does not always report the domain in d=
+  - dmarclogs now contain the message ID
+  - DMARC aggregate report is now indicating the override reason correctly
+  - better reject texts when the From: header is non conforming
+  - scripts extensively tested during DMARC Interop
+
+2012/07/05 - Franck Martin
+  - adding DMARC aggregate report capability
+
+2012/05/31 - Franck Martin
+  - initial release

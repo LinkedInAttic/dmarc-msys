@@ -15,14 +15,22 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ]]
--- version 1.1
+-- version 1.3
 --
 
 --[[ This requires the dp_config.lua scripts to contain a dmarc entry
 --that will specify whitelists when the policy should not be applied.
+--ruf  to enable sending forensic reports, if there is an email, reports
+--will be sent to this address regarding of the domain policy,
+--if external is false no report is sent but to the email address.
 
 -- DMARC check
 msys.dp_config.dmarc = {
+    ruf = {
+    enable = true,
+    email = "dmarc@example.com",
+    external = false
+  },
   local_policy = {
     check = true,
     honor_whitelist = { "whitelist" }
@@ -38,8 +46,9 @@ msys.dp_config.dmarc = {
 };
 
 The following functions are required in custom_policy.lua, 
-this will load domains that pass dkim
-and all the domains that have a dkim header
+this will load domains that pass dkim in dmarc_dkim_domains
+and all the domains that have a DKIM-Signature header
+note: ec_dkim_domains returns the domain in i= if found otherwise d= 
 
 function msys.dp_config.custom_policy.pre_validate_data(msg, ac, vctx)
 -- the following has a memory leak so we use a sieve script instead
@@ -57,24 +66,41 @@ function msys.dp_config.custom_policy.pre_validate_data(msg, ac, vctx)
 -- vctx_mess_set "dmarc_dkim_domains" $domains_string;
 -- siv-end
 -- 
--- and we are not sure that this function is executed
--- before this module!
 --  
   --- see if there are DKIM headers in the message                                 
   local dkim_domains ="";
+  local dkim_domainsi = "";
   local dk=msg:header('DKIM-Signature');
+  local ddomain = "";
+  local idomain = "";
   for k,v in pairs(dk) do
     print ("DKIM:"..tostring(v));
+    ddomain ="";
+    idomain = ""
     dke = explode(";",v);
     for i=0,#dke do
-      print ("dke:"..tostring(dke[i]));
+      -- print ("dke:"..tostring(dke[i]));
       if string.sub(dke[i],2,3) == "d=" then
-        dkim_domains =  dkim_domains .. " " .. string.lower(string.sub(dke[i],4));
+         ddomain = string.lower(string.sub(dke[i],4));
       end
+      if string.sub(dke[i],2,3) == "i=" then
+         local itag = string.lower(string.sub(dke[i],4));
+         local var = msys.pcre.match(itag,"^.*@(?<domain>\\w+)$");
+         if var then
+           idomain = var["domain"];
+         end
+      end
+    end
+    dkim_domains =  dkim_domains .. " " .. ddomain;
+    if idomain ~= "" then
+      dkim_domainsi =  dkim_domainsi .. " " .. idomain;
+    else
+      dkim_domainsi =  dkim_domainsi .. " " .. ddomain;
     end
   end  
   vctx:set(msys.core.VCTX_MESS, "dkim_domains",dkim_domains);
-
+  vctx:set(msys.core.VCTX_MESS, "dkim_domainsi",dkim_domainsi);
+  
   local ret = dmarc_validate_data(msg, ac, vctx);
 
   if ret == nil then
@@ -134,12 +160,12 @@ local function ip_from_addr_and_port(addr_and_port)
 end
 
 local function dmarc_log(report)
-  print("dmarc_log");
+  if debug then print("dmarc_log"); end
   if (jlog == nil) then
     jlog = msys.core.io_wrapper_open("jlog:///var/log/ecelerity/dmarclog.cluster=>master", msys.core.O_CREAT | msys.core.O_APPEND | msys.core.O_WRONLY, 0660);
   end
   jlog:write(report,string.len(report));
-  print("end of dmarc_log");
+  if debug then print("end of dmarc_log");end
 end
 
 local function dmarc_find(domain)
@@ -213,6 +239,150 @@ local function dmarc_search(from_domain)
   return dmarc_found,dmarc_record,domain,domain_policy;
 end
 
+local function ruf_mail_list(ruf,domain)
+        local maillist="";
+        if msys.dp_config.dmarc.ruf.email ~= nil then
+        	maillist=msys.dp_config.dmarc.ruf.email..",";
+        end
+        if msys.dp_config.dmarc.ruf.external==nil or msys.dp_config.dmarc.ruf.external==false then
+		maillist=string.sub(maillist,1,-2);
+		return maillist;
+        end
+	if ruf==nil or ruf=="" then
+		return maillist;
+	end
+	local kv_pairs = msys.pcre.split(ruf, "\\s*,\\s*");
+	for k, v in ipairs(kv_pairs) do
+      local ruflocal,rufdomain = string.match(v, "mailto:%s*(.+)@(.+)");
+      ruflocal = string.lower(tostring(ruflocal));
+      rufdomain = string.lower(tostring(rufdomain));
+      if debug then print ("ruf:"..ruflocal.."@"..rufdomain); end
+      if string.find("."..rufdomain, "."..domain, 1, true) ~=nil then
+      	maillist=maillist..ruflocal.."@"..rufdomain..",";
+      else
+        local results, errmsg = msys.dnsLookup(domain.."_report._dmarc." .. tostring(rufdomain), "txt");
+  		if results ~= nil then
+   		  for k2,v2 in ipairs(results) do
+      		if string.sub(v2,1,8) == "v=DMARC1" then
+              maillist=maillist..ruflocal.."@"..rufdomain..",";
+              break;
+      	    end
+          end
+        end
+      end
+    end
+	maillist=string.sub(maillist,1,-2);
+	return maillist;
+end
+
+local function dmarc_forensic(ruf,domain,dmarc_status, ip, msg)
+	local maillist = ruf_mail_list(ruf,domain);
+	if debug then print("ruf mail list:"..maillist); end
+	if maillist==nil or maillist=="" then
+		return msys.core.VALIDATE_CONT;
+	end	
+	-- get the mesage ready to be sent
+	
+	local headers = {};
+	
+	local imsg = msys.core.ec_message_new(now);
+	local imailfrom = "dmarc-noreply@linkedin.com";
+	local mailfrom = msg:mailfrom();
+	local rcptto = msg:rcptto();
+	local msgidtbl = msg:header("Message-Id");
+        local msgid = "";
+        if msgidtbl ~= nil and #msgidtbl>=1 then
+           msgid = msgidtbl[1];
+        end
+	local today = os.date("%a, %d %b %Y %X %z")
+	
+	headers["To"] = maillist;
+	headers["From"] = "dmarc-noreply@linkedin.com";
+	headers["Subject"] = "Forensic report";
+		
+	local parttext = "Content-Type: text/plain; charset=\"US-ASCII\"\r\n"..
+					 "Content-Transfer-Encoding: 7bit\r\n\r\n"..
+					 "This is an email abuse report for an email message received from IP "..tostring(ip).." on "..tostring(today)..".\r\n"..
+					 "The message below did not meet the sending domain's dmarc policy.\r\n"..
+					 "For more information about this format please see http://tools.ietf.org/html/rfc6591 .\r\n\r\n";
+
+	local partfeedback = "Content-Type: message/feedback-report\r\n\r\n"..
+	                     "Feedback-Type: auth-failure\r\n"..
+						 "User-Agent: Lua/1.0\r\n"..
+						 "Version: 1.0\r\n"..
+						 "Original-Mail-From: "..tostring(mailfrom).."\r\n"..
+						 "Original-Rcpt-To: "..tostring(rcptto).."\r\n"..
+						 "Arrival-Date: "..today.."\r\n"..
+						 "Message-ID: "..tostring(msgid).."\r\n"..
+						 "Authentication-Results: "..tostring(dmarc_status).."\r\n"..
+						 "Source-IP: "..tostring(ip).."\r\n"..
+						 "Delivery-Result: reject\r\n"..
+						 "Auth-Failure: dmarc\r\n"..
+						 "Reported-Domain: "..tostring(domain).."\r\n\r\n";
+	
+	---- build message
+	-- insert headers
+	local io = msys.core.ec_message_builder(imsg,2048);
+  	-- write the headers
+  	local boundary = imsg:makeBoundary();
+  	local len_boundary = #boundary;
+  	local k,v;
+  	for k,v in pairs(headers) do
+          if string.lower(k) != "content-type" and v != nil then
+            io:write(k, #k);
+            io:write(": ", 2);
+            io:write(v, #v);
+            io:write("\r\n", 2);
+          end
+       end
+       local tmp = "Content-Type: multipart/report; report-type=feedback-report;\r\n    boundary=\""..boundary.."\"\r\n";
+       io:write(tmp, #tmp);
+
+       io:write("\r\n", 2);
+	
+       -- first boundary: text
+       io:write("--", 2);
+       io:write(boundary, len_boundary);
+       io:write("\r\n", 2);
+    
+       io:write(parttext, #parttext);
+    
+        -- second boundary: feedback report
+    
+	io:write("--", 2);
+        io:write(boundary, len_boundary);
+        io:write("\r\n", 2);
+    
+        io:write(partfeedback, #partfeedback);
+    
+        -- third boundary: attached email
+        io:write("--", 2);
+        io:write(boundary, len_boundary);
+        io:write("\r\n", 2);
+    
+        io:write("Content-Type: message/rfc822\r\n", 30);
+        io:write("Content-Disposition: inline\r\n\r\n", 31);
+
+	local tmp_str = msys.core.string_new();
+        tmp_str.type = msys.core.STRING_TYPE_IO_OBJECT;
+        tmp_str.backing = io;
+        msg:render_to_string(tmp_str, msys.core.EC_MSG_RENDER_OMIT_DOT);
+    
+	io:write("\r\n--", 4)
+        io:write(boundary, len_boundary)
+        io:write("--\r\n", 4)
+    
+        -- end of the message
+        io:write("\r\n.\r\n", 5)
+        io:close()
+        io = nil
+
+	imsg:inject(imailfrom, maillist);
+
+        if debug then print("ruf sent"); end
+	return msys.core.VALIDATE_CONT;
+										
+end
 
 local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_found, dmarc_record, domain, domain_policy)
   if debug and dmarc_found then
@@ -227,8 +397,8 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
   if spf_status ~= nil and spf_status == "pass" then
     if from_domain == envelope_domain then
       spf_alignement="strict";
-    elseif string.find(from_domain, envelope_domain) ~=nil or 
-           string.find(envelope_domain, from_domain) ~=nil then
+    elseif string.find("."..from_domain, "."..envelope_domain, 1, true) ~=nil or 
+           string.find("."..envelope_domain, "."..from_domain, 1, true) ~=nil then
       spf_alignement = "relaxed";
     end    
   end
@@ -242,8 +412,8 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
     if dkim_domain == from_domain then
       dkim_alignement = "strict";
       break;
-    elseif string.find(from_domain, dkim_domain) ~=nil or 
-           string.find(dkim_domain, from_domain) ~=nil then
+    elseif string.find("."..from_domain, "."..dkim_domain, 1, true) ~=nil or 
+           string.find("."..dkim_domain, "."..from_domain, 1, true) ~=nil then
       dkim_alignement = "relaxed";
     end        
   end
@@ -254,6 +424,7 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
     local kv_pairs = msys.pcre.split(dmarc_record, "\\s*;\\s*")   
     for k, v in ipairs(kv_pairs) do
       local key, value = string.match(v, "([^=%s]+)%s*=%s*(.+)");
+      local key = string.lower(key);
       real_pairs[key] = value;
       if debug then print(key.."="..value); end
     end
@@ -268,6 +439,7 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
     else
       dmarc_status = "dmarc=fail d=" .. tostring(from_domain) .. " (p=nil; dis=none)";
     end
+    if debug then print(dmarc_status); end
     vctx:set(msys.core.VCTX_MESS, "dmarc_status",dmarc_status);
     return msys.core.VALIDATE_CONT;
   end
@@ -277,9 +449,13 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
   local dmarc_dkim = "fail";
   if real_pairs.aspf == nil then
     real_pairs["aspf"] = "r";
+  else
+  	real_pairs["aspf"] = string.lower(real_pairs["aspf"]);
   end
   if real_pairs.adkim == nil then
     real_pairs["adkim"] = "r";
+  else
+  	real_pairs["adkim"] = string.lower(real_pairs["adkim"]);
   end
   if real_pairs.aspf == "r" and spf_alignement ~= "none" then
     dmarc_spf = "pass";
@@ -309,12 +485,14 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
     domain_policy = true;
   end
   
+  real_pairs["p"] = string.lower(real_pairs["p"]);
   if domain_policy == true then
     if real_pairs.p=="quarantine" or real_pairs.p=="reject" then
       policy_requested = real_pairs.p;
     end
   else
     if real_pairs.sp ~= nil then
+      real_pairs["sp"] = string.lower(real_pairs["sp"]);
       if real_pairs.sp=="quarantine" or real_pairs.sp=="reject" then
         policy_requested = real_pairs.sp;
       end
@@ -342,7 +520,15 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
     if real_pairs.pct ~= nil and tonumber(real_pairs.pct) < 100 then
       if math.random(100) < tonumber(real_pairs.pct) then
         -- Not our time to run, just check and log
-        policy = "sampled_out";
+        if real_pairs.p ~= nil then
+          if real_pairs.p == "reject" then
+            policy = "quarantine";
+          elseif real_pairs.p == "quarantine" then
+            policy = "sampled_out";
+          else
+            policy = "none";
+          end
+        end        
       end
     end
 
@@ -375,21 +561,22 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
   if debug then print("dmarc_status",dmarc_status); end
 
   -- let's log in paniclog because I don't know where else to log
-  local report = "DMARC@"..tostring(msys.core.get_now_ts()).."@"..tostring(domain).."@"..ip_from_addr_and_port(tostring(ac.remote_addr))..
+  local report = "DMARC1@"..tostring(msys.core.get_now_ts()).."@"..tostring(msg.id).."@"..tostring(domain).."@"..ip_from_addr_and_port(tostring(ac.remote_addr))..
                  "@"..tostring(real_pairs.adkim).."@"..tostring(real_pairs.aspf).."@"..tostring(real_pairs.p).."@"..tostring(real_pairs.sp)..
                  "@"..tostring(policy_requested).."@"..tostring(real_pairs.pct).."@"..tostring(policy).."@"..tostring(dmarc_dkim).."@"..tostring(dmarc_spf)..
                  "@"..tostring(from_domain).."@SPF@"..tostring(envelope_domain).."@"..tostring(spf_status).."@DKIM";
 
   if debug then print("dkim_domains:"..tostring(vctx:get(msys.core.VCTX_MESS, "dkim_domains"))); end
   local found_dkim_domains = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "dkim_domains"), "\\s+");
+  local found_dkim_domainsi = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "dkim_domainsi"), "\\s+");
 
-  if found_dkim_domains ~= nil and #found_dkim_domains >= 1 then
-    for i=1,#found_dkim_domains do
+  if found_dkim_domainsi ~= nil and #found_dkim_domainsi >= 1 then
+    for i=1,#found_dkim_domainsi do
         local found=false;
         if dkim_domains ~= nil and #dkim_domains >= 1 then
           for j=1,#dkim_domains do
-            if debug then print(">"..found_dkim_domains[i].."<>"..dkim_domains[j].."<"); end
-            if dkim_domains[j] == found_dkim_domains[i] then
+            if debug then print(">"..found_dkim_domainsi[i].."<>"..dkim_domains[j].."<>"..found_dkim_domains[i].."<"); end
+            if dkim_domains[j] == found_dkim_domainsi[i] then
               found=true;
             end
           end
@@ -418,7 +605,14 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
       -- we found a list-id let's note that as we may want to whitelist
       print("DMARC MLM whitelist potential "..mlm[1].." "..ip_from_addr_and_port(tostring(ac.remote_addr)));
     end
-
+    if msys.dp_config.dmarc.ruf.enable ~= nil and
+       msys.dp_config.dmarc.ruf.enable == true then
+      if real_pairs["ruf"] ~= nil and real_pairs["ruf"] ~= "" then
+        real_pairs["ruf"] = string.lower(real_pairs["ruf"]);
+        -- we have a ruf so we could send a forensic report
+    	status,res = msys.runInPool("IO", function () dmarc_forensic(real_pairs["ruf"],domain,dmarc_status, ip_from_addr_and_port(tostring(ac.remote_addr)), msg); end, true);
+      end
+    end
     vctx:set_code(554, "DMARC email rejected by policy");
     return msys.core.VALIDATE_DONE;
   end
@@ -428,18 +622,36 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
 end
 
 function dmarc_validate_data(msg, ac, vctx)
+
+  local mailfrom = msg:mailfrom();
   
   local domains = msg:address_header("From", "domain");
+  
+  local headerfrom = msg:header('From');
+  
+  -- various checks regarding dmarc
+  if #headerfrom > 1 then
+    return vctx:pbp_disconnect(554, "An email with more than one From: header is invalid cf RFC5322 3.6");
+  end
   
   -- various checks regarding dmarc
   if domains == nil or #domains == 0 then
 	  -- No From header, reject 
-	  return vctx:pbp_disconnect(554, "DMARC validation requires a From Header");
+	  if mailfrom ~= nil and mailfrom ~= "" then
+	    -- this is not a bounce
+	    if #headerfrom < 1 then
+	    	return vctx:pbp_disconnect(554, "Can't find a RFC5322 From: header, this is annoying with DMARC");
+	    else
+	  	    return vctx:pbp_disconnect(554, "RFC5322 3.6.2 requires a domain in the header From: "..tostring(headerfrom[1]));
+	  	end
+	  else
+	    -- this is a bounce and there is no domain to tie to DMARC so bail out.
+	  	return msys.core.VALIDATE_CONT;
+	  end
   end
   
   if #domains > 1 then
-	  -- too many domains in From header, reject 
-	  return vctx:pbp_disconnect(554, "DMARC validation requires a single domain in the From Header");
+	  return vctx:pbp_disconnect(554, "It is difficult to do DMARC with an email with too many domains in the header From: "..tostring(headerfrom[1]));
   end
   
   local from_domain = string.lower(domains[1]);
