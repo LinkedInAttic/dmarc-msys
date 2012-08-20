@@ -15,7 +15,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ]]
--- version 1.3
+-- version 1.5
 --
 
 --[[ This requires the dp_config.lua scripts to contain a dmarc entry
@@ -260,7 +260,7 @@ local function ruf_mail_list(ruf,domain)
       if string.find("."..rufdomain, "."..domain, 1, true) ~=nil then
       	maillist=maillist..ruflocal.."@"..rufdomain..",";
       else
-        local results, errmsg = msys.dnsLookup(domain.."_report._dmarc." .. tostring(rufdomain), "txt");
+        local results, errmsg = msys.dnsLookup(domain.."._report._dmarc." .. tostring(rufdomain), "txt");
   		if results ~= nil then
    		  for k2,v2 in ipairs(results) do
       		if string.sub(v2,1,8) == "v=DMARC1" then
@@ -296,9 +296,9 @@ local function dmarc_forensic(ruf,domain,dmarc_status, ip, msg)
         end
 	local today = os.date("%a, %d %b %Y %X %z")
 	
-	headers["To"] = maillist;
+	headers["To"] = "dmarc-noreply@linkedin.com";
 	headers["From"] = "dmarc-noreply@linkedin.com";
-	headers["Subject"] = "Forensic report";
+	headers["Subject"] = "DMARC Forensic report for "..tostring(domain).." Mail-From:"..tostring(mailfrom).." IP:"..tostring(ip);
 		
 	local parttext = "Content-Type: text/plain; charset=\"US-ASCII\"\r\n"..
 					 "Content-Transfer-Encoding: 7bit\r\n\r\n"..
@@ -334,52 +334,52 @@ local function dmarc_forensic(ruf,domain,dmarc_status, ip, msg)
             io:write(v, #v);
             io:write("\r\n", 2);
           end
-       end
-       local tmp = "Content-Type: multipart/report; report-type=feedback-report;\r\n    boundary=\""..boundary.."\"\r\n";
-       io:write(tmp, #tmp);
+    end
+    local tmp = "Content-Type: multipart/report; report-type=feedback-report;\r\n    boundary=\""..boundary.."\"\r\n";
+    io:write(tmp, #tmp);
 
-       io:write("\r\n", 2);
+    io:write("\r\n", 2);
 	
-       -- first boundary: text
-       io:write("--", 2);
-       io:write(boundary, len_boundary);
-       io:write("\r\n", 2);
+    -- first boundary: text
+    io:write("--", 2);
+    io:write(boundary, len_boundary);
+    io:write("\r\n", 2);
     
-       io:write(parttext, #parttext);
+    io:write(parttext, #parttext);
     
-        -- second boundary: feedback report
+    -- second boundary: feedback report
     
 	io:write("--", 2);
-        io:write(boundary, len_boundary);
-        io:write("\r\n", 2);
+    io:write(boundary, len_boundary);
+    io:write("\r\n", 2);
     
-        io:write(partfeedback, #partfeedback);
+    io:write(partfeedback, #partfeedback);
     
-        -- third boundary: attached email
-        io:write("--", 2);
-        io:write(boundary, len_boundary);
-        io:write("\r\n", 2);
+    -- third boundary: attached email
+    io:write("--", 2);
+    io:write(boundary, len_boundary);
+    io:write("\r\n", 2);
     
-        io:write("Content-Type: message/rfc822\r\n", 30);
-        io:write("Content-Disposition: inline\r\n\r\n", 31);
+    io:write("Content-Type: message/rfc822\r\n", 30);
+    io:write("Content-Disposition: inline\r\n\r\n", 31);
 
 	local tmp_str = msys.core.string_new();
-        tmp_str.type = msys.core.STRING_TYPE_IO_OBJECT;
-        tmp_str.backing = io;
-        msg:render_to_string(tmp_str, msys.core.EC_MSG_RENDER_OMIT_DOT);
+    tmp_str.type = msys.core.STRING_TYPE_IO_OBJECT;
+    tmp_str.backing = io;
+    msg:render_to_string(tmp_str, msys.core.EC_MSG_RENDER_OMIT_DOT);
     
 	io:write("\r\n--", 4)
-        io:write(boundary, len_boundary)
-        io:write("--\r\n", 4)
+    io:write(boundary, len_boundary)
+    io:write("--\r\n", 4)
     
-        -- end of the message
-        io:write("\r\n.\r\n", 5)
-        io:close()
-        io = nil
+    -- end of the message
+    io:write("\r\n.\r\n", 5)
+    io:close()
+    io = nil
 
 	imsg:inject(imailfrom, maillist);
 
-        if debug then print("ruf sent"); end
+    if debug then print("ruf sent"); end
 	return msys.core.VALIDATE_CONT;
 										
 end

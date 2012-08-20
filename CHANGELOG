@@ -1,6 +1,12 @@
 CHANGELOG
 =========
 
+2012/08/20 - Franck Martin
+  - reporting the correct subject for the aggregate reports
+  - make aggregate reporting more resilient to bad email addresses
+  - fixing a bug in finding via DNS if a domain accepts forensic reports
+  - make a humanly parseable subject for forensic reports, deviates from RFC
+
 2012/07/27 - Franck Martin
   - adding forensic reports capability
   - moving some dmarc options in the dmarc config section in dp_config.lua

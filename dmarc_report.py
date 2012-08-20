@@ -16,7 +16,7 @@
 #See the License for the specific language governing permissions and
 #limitations under the License.
 #
-# Version 1.1
+# Version 1.2
 
 import sys
 from datetime import date
@@ -271,11 +271,14 @@ for domain in dicreport:
     msg = MIMEMultipart()
     msg['From']=report_from
     msg['To']=email
-    msg['Subject']=filename
+    msg['Subject']= 'Report Domain: %s Submitter: %s Report-ID: %s' % (domain,org_name,report_unique_id)
     msg.attach(zipmsg)
    
     # and ship
-    s = smtplib.SMTP('localhost')
-    s.sendmail(report_from, email, msg.as_string())
-    s.quit()
+    try:
+      s = smtplib.SMTP('localhost')
+      s.sendmail(report_from, email, msg.as_string())
+      s.quit()
+    except Exception:
+      print "Error: unable to send email"
 
