@@ -15,7 +15,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ]]
--- version 1.5
+-- version 1.6
 --
 
 --[[ This requires the dp_config.lua scripts to contain a dmarc entry
@@ -109,6 +109,19 @@ function msys.dp_config.custom_policy.pre_validate_data(msg, ac, vctx)
   
   return ret;
 end
+
+Save this file as /opt/msys/ecelerity/etc/conf/default/lua/dmarc-msys.lua 
+And don't forget to load the module in the ecelerity.conf
+
+scriptlet "scriptlet" {
+  # this loads default scripts to support enhanced control channel features
+  script "boot" {
+    source = "msys.boot"
+  }
+  script "dmarc" {
+    source = "lua/dmarc-msys"
+  }
+}
 
 ]]
 
@@ -613,8 +626,7 @@ local function dmarc_work(msg, ac, vctx, from_domain, envelope_domain, dmarc_fou
     	status,res = msys.runInPool("IO", function () dmarc_forensic(real_pairs["ruf"],domain,dmarc_status, ip_from_addr_and_port(tostring(ac.remote_addr)), msg); end, true);
       end
     end
-    vctx:set_code(554, "DMARC email rejected by policy");
-    return msys.core.VALIDATE_DONE;
+    return vctx:pbp_disconnect(550, "5.7.1 Email rejected per DMARC policy for "..tostring(domain));
   end
   
   if debug then print("end of dmarc_work"); end
@@ -631,7 +643,7 @@ function dmarc_validate_data(msg, ac, vctx)
   
   -- various checks regarding dmarc
   if #headerfrom > 1 then
-    return vctx:pbp_disconnect(554, "An email with more than one From: header is invalid cf RFC5322 3.6");
+    return vctx:pbp_disconnect(550, "5.7.1 An email with more than one From: header is invalid cf RFC5322 3.6");
   end
   
   -- various checks regarding dmarc
@@ -640,9 +652,9 @@ function dmarc_validate_data(msg, ac, vctx)
 	  if mailfrom ~= nil and mailfrom ~= "" then
 	    -- this is not a bounce
 	    if #headerfrom < 1 then
-	    	return vctx:pbp_disconnect(554, "Can't find a RFC5322 From: header, this is annoying with DMARC");
+	    	return vctx:pbp_disconnect(550, "5.7.1 Can't find a RFC5322 From: header, this is annoying with DMARC and required by RFC5322 3.6");
 	    else
-	  	    return vctx:pbp_disconnect(554, "RFC5322 3.6.2 requires a domain in the header From: "..tostring(headerfrom[1]));
+	  	    return vctx:pbp_disconnect(550, "5.7.1 RFC5322 3.6.2 requires a domain in the header From: "..tostring(headerfrom[1]));
 	  	end
 	  else
 	    -- this is a bounce and there is no domain to tie to DMARC so bail out.
@@ -651,7 +663,9 @@ function dmarc_validate_data(msg, ac, vctx)
   end
   
   if #domains > 1 then
-	  return vctx:pbp_disconnect(554, "It is difficult to do DMARC with an email with too many domains in the header From: "..tostring(headerfrom[1]));
+  	if #domains > 2 or string.lower(domains[1]) ~= string.lower(domains[2]) then
+		return vctx:pbp_disconnect(550, "5.7.1 It is difficult to do DMARC with an email with too many domains in the header From: "..tostring(headerfrom[1]));
+  	end
   end
   
   local from_domain = string.lower(domains[1]);
