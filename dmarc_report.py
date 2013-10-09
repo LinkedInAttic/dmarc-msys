@@ -16,7 +16,7 @@
 #See the License for the specific language governing permissions and
 #limitations under the License.
 #
-# Version 1.2
+# Version 1.3
 
 import sys
 from datetime import date
@@ -30,7 +30,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from email.encoders import encode_base64
-import zipfile
+import gzip
 from struct import *
 from socket import *
 
@@ -81,7 +81,7 @@ def dmarc_report_email(domain):
             for mail in rua:
               if mail[0:7]=="mailto:":
                 email=mail[7:]
-		try: 
+                try: 
                   (elocal,edomain)=email.split('@',1)
                 except ValueError:
                   print 'email cannot be decoded: %s' % email
@@ -107,6 +107,7 @@ try:
 except getopt.GetoptError, err:
         usage()
         sys.exit(2)
+
 global debug
 debug = False
 days = 1
@@ -143,19 +144,19 @@ for root, dirs, files in os.walk(directory):
           (tag,timestamp,msgid,domain,ip,record) = line.split('@',5)
         else:
           (tag,timestamp,domain,ip,record) = line.split('@',4)
-	if tag[0:5] == "DMARC" and not ip_isprivate(ip):
+        if tag[0:5] == "DMARC" and not ip_isprivate(ip):
           record = ip+'@'+record
           if dicreport.has_key(domain):
-             dicrecord=dicreport[domain]
-             if dicrecord.has_key(record):
-		dicrecord[record]=dicrecord[record]+1
-             else:
-                dicrecord[record]=1
-             dicreport[domain]=dicrecord
+            dicrecord=dicreport[domain]
+            if dicrecord.has_key(record):
+              dicrecord[record]=dicrecord[record]+1
+            else:
+              dicrecord[record]=1
+            dicreport[domain]=dicrecord
           else:
-             dicrecord = {}
-	     dicrecord[record]=1
-             dicreport[domain]=dicrecord
+            dicrecord = {}
+            dicrecord[record]=1
+            dicreport[domain]=dicrecord
              
       except ValueError:
         pass
@@ -167,7 +168,7 @@ for domain in dicreport:
   sday1 = sday1[0:-2]
   sday2 = "%s" % day2
   sday2 = sday2[0:-2]
-  filename = "%s!%s!%s!%s" % (org_name,domain,sday1,sday2)
+  filename = "%s!%s!%s!%s!%s" % (org_name,domain,sday1,sday2,report_id)
   directory = '%s%s' % (dmarcreport,yesterday.strftime('%Y/%m/%d'))
   report_unique_id = "%s!%s" % (report_id,filename)
   if debug: print ('%s/%s.xml' % (directory,filename))
@@ -185,7 +186,7 @@ for domain in dicreport:
   frep.write('    <org_name>%s</org_name>\n' % org_name)
   frep.write('    <email>%s</email>\n' % org_email)
   frep.write('    <extra_contact_info>%s</extra_contact_info>\n' % extra_contact_info)
-  frep.write('    <report_id>%s</report_id>\n' % report_unique_id)
+  frep.write('    <report_id>%s</report_id>\n' % filename)
   frep.write('    <date_range>\n')
   frep.write('      <begin>%s</begin>\n' % sday1)
   frep.write('      <end>%s</end>\n' % sday2)
@@ -255,25 +256,27 @@ for domain in dicreport:
   if debug: emaillist=[debugemail]
 
   #first compress
-  zf = zipfile.ZipFile('%s/%s.zip' % (directory,filename), mode='w')
+  zf = gzip.open('%s/%s.xml.gz' % (directory,filename),'wb')
+  frep = open('%s/%s.xml' % (directory,filename),'rb')
   try:
-    zf.write('%s/%s.xml' % (directory,filename), filename+'.xml', zipfile.ZIP_DEFLATED)
+    zf.writelines(frep)
   finally:
     zf.close()
+    frep.close()
  
   for email in emaillist:
     #then encode in a message
-    fp = open('%s/%s.zip' % (directory,filename))
-    zipmsg = MIMEApplication(fp.read(),'zip',_encoder=encode_base64)
+    fp = open('%s/%s.xml.gz' % (directory,filename))
+    gzipmsg = MIMEApplication(fp.read(),'gzip',_encoder=encode_base64)
     fp.close()
-    zipmsg.add_header('Content-Disposition', 'attachment', filename=filename+'.zip')
+    gzipmsg.add_header('Content-Disposition', 'attachment', filename=filename+'.xml.gz')
 
     msg = MIMEMultipart()
     msg['From']=report_from
     msg['To']=email
-    msg['Subject']= 'Report Domain: %s Submitter: %s Report-ID: %s' % (domain,org_name,report_unique_id)
-    msg.attach(zipmsg)
-   
+    msg['Subject']= 'Report Domain: %s Submitter: %s Report-ID: %s' % (domain,org_name,filename)
+    msg.attach(gzipmsg)
+
     # and ship
     try:
       s = smtplib.SMTP('localhost')
@@ -281,4 +284,3 @@ for domain in dicreport:
       s.quit()
     except Exception:
       print "Error: unable to send email"
-
