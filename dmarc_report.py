@@ -16,7 +16,7 @@
 #See the License for the specific language governing permissions and
 #limitations under the License.
 #
-# Version 1.3
+# Version 1.4
 
 import sys
 from datetime import date
@@ -33,6 +33,7 @@ from email.encoders import encode_base64
 import gzip
 from struct import *
 from socket import *
+import ipaddr
 
 
 # change the following to suit your organisation
@@ -52,12 +53,17 @@ def usage():
     print "dmarc_report.py parses log files created by momentum and generate daily aggregate reports"
 
 def ip_isprivate(ip):
-  f = unpack('!I',inet_pton(AF_INET,ip))[0]
-  private = (["127.0.0.0","255.0.0.0"],["192.168.0.0","255.255.0.0"],["172.16.0.0","255.240.0.0"],["10.0.0.0","255.0.0.0"])
+  private = ("127.0.0.0/8","192.168.0.0/16","172.16.0.0/12","10.0.0.0/8","fc00::/7","fe80::/10")
+  try:
+    f=ipaddr.IPAddress(ip)
+  except ValueError:
+    print 'address/netmask is invalid: %s' % ip
   for net in private:
-    mask = unpack('!I',inet_aton(net[1]))[0]
-    p = unpack('!I',inet_aton(net[0]))[0]
-    if (f & mask) == p:
+    try:
+      p=ipaddr.IPNetwork(net)
+    except ValueError:
+      print 'address/netmask is invalid: %s' % net
+    if f in p:
       return True
   return False
 

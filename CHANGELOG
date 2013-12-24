@@ -1,6 +1,9 @@
 CHANGELOG
 =========
 
+2013/12/24 - Franck Martin
+  - Fix dmarc_report.py to work correctly with IPv6
+
 2012/09/19 - Franck Martin
   - Fix SMTP error codes and text
   - Disconnect after reject as likely a bad actor
