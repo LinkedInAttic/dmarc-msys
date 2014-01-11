@@ -24,3 +24,11 @@ How to install
 This requires momentum-receiving from Message Systems.
 
 Follow instructions in the comments at the beginning of the lua script.
+
+Download the Public Suffix list from http://publicsuffix.org/ and convert it
+to punycode using psl2pc.py and place it in:
+/opt/msys/ecelerity/etc/conf/default/lua/pslpuny.txt
+or update the loadpsl() function
+
+Install dmarc_report.py on the manager with a daily cron job to process
+dmarc logs and send aggregate reports

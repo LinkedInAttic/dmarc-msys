@@ -1,6 +1,11 @@
 CHANGELOG
 =========
 
+2014/01/10 - Franck Martin
+  - Use the public suffix list to look for the DMARC record
+  - Remove d= from authentication-results dmarc section
+  - Store authentication-results header in message context
+
 2013/12/24 - Franck Martin
   - Fix dmarc_report.py to work correctly with IPv6
 

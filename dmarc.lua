@@ -15,7 +15,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
    ]]
--- version 1.13
+-- version 1.15
 --
 
 --[[ This requires the dp_config.lua scripts to contain a dmarc entry
@@ -238,6 +238,82 @@ local function dmarc_log(report)
   if debug then print("end of dmarc_log");end
 end
 
+local psl = {}
+function loadpsl()
+   file = "/opt/msys/ecelerity/etc/conf/default/lua/pslpuny.txt"
+   for line in io.lines(file) do 
+    table.insert(psl,line)
+  end
+end
+
+function getOrgDomain(domain)
+   if psl==nil or #psl==0 then
+      loadpsl()
+   end
+   domain=tostring(domain)
+   if string.sub(domain,1,1)=="." then
+      domain=string.sub(domain,2)
+   end
+   domain="."..string.lower(domain)
+   dname="[a-z0-9\-_]-"
+
+   local matchfound=false
+   orgDomain=""
+   orgDomainCount=0
+
+   for k,v in pairs(psl) do
+      dmatch=v
+      dmark=''
+      dmatch=string.gsub(dmatch,'\-',"%%-")
+      if string.sub(v,1,2) =='*.' then
+         dmatch=dname.."\."..string.sub(v,3)
+         dmark = '*'
+      end
+      if string.sub(v,1,1) =='!' then
+         dmatch=string.sub(v,2)
+         dmark = '!'
+      end      
+      pat="("..dname..")\.("..dmatch..")$"
+      _,_,match,tld = string.find(domain, pat)
+      if match ~= nil then
+         matchfound=true
+         if debug then print (v..": "..domain.." ->"..pat.."<- "..dmark.." - "..dmatch.." | "..tostring(match).." -|- "..tostring(tld)); end
+         if dmark=="*" and match=="" then
+            fdomain=""
+         elseif dmark=="!" and match=="" then
+            fdomain=string.sub(tostring(match).."."..tostring(tld),2)
+         elseif dmark=="!" and match~="" then
+            fdomain=tostring(tld)
+            orgDomain=fdomain
+            break
+         else
+            fdomain=tostring(match).."."..tostring(tld)
+         end
+         local _,count = string.gsub(fdomain,"%.","")
+         if count>orgDomainCount then
+            orgDomain=fdomain
+            orgDomainCount=count
+         end
+      end
+   end
+   if not matchfound then
+      pat="("..dname.."\."..dname..")$"
+      _,_,match=string.find(domain,pat)
+      if match ~= nil then
+         orgDomain=tostring(match)
+      else
+         orgDomain=string.sub(domain,2)
+      end
+   end
+   if orgDomain=="" then
+      orgDomain=string.sub(domain,2)
+   end
+   if string.sub(orgDomain,1,1)=="." then
+      orgDomain=string.sub(orgDomain,2)
+   end
+   return orgDomain
+end
+
 local function dmarc_find(domain)
   local dmarc_found = false;
   local dmarc_record = "";
@@ -255,7 +331,32 @@ local function dmarc_find(domain)
 end
 
 local function dmarc_search(from_domain)
-  -- Now let's find if the domain has a DMARC record.
+  -- Now let's find if the domain has a DMARC record using the public suffix list.
+  local dmarc_found = false;
+  local dmarc_record = "";
+
+  local domain;
+  local domain_policy = false;
+
+  domain = string.lower(from_domain);
+  dmarc_found, dmarc_record = dmarc_find(domain);
+  if dmarc_found == false then
+    domain = getOrgDomain(domain);
+    dmarc_found, dmarc_record = dmarc_find(domain);
+  else
+    domain_policy = true;
+  end
+
+  if debug and dmarc_found then 
+    print("dmarc_record:"..tostring(dmarc_record));
+    print("domain:"..tostring(domain));
+    print("domain_policy:"..tostring(domain_policy));
+  end  
+  return dmarc_found,dmarc_record,domain,domain_policy;
+end
+
+local function dmarc_search2(from_domain)
+  -- Now let's find if the domain has a DMARC record using DNS tree traversal.
   local dmarc_found = false;
   local dmarc_record = "";
 
@@ -505,15 +606,16 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
   if dmarc_found == false or real_pairs.v == nil or real_pairs.v ~= "DMARC1" or
     real_pairs.p == nil then     
     if spf_alignement ~= "none" or dkim_alignement ~= "none" then
-      dmarc_status = "dmarc=pass (p=nil; dis=none) d=" .. tostring(from_domain) .. " header.from=" .. tostring(from_domain);
+      dmarc_status = "dmarc=pass (p=nil; dis=none) header.from=" .. tostring(from_domain);
     else
-      dmarc_status = "dmarc=fail (p=nil; dis=none) d=" .. tostring(from_domain) .. " header.from=" .. tostring(from_domain);
+      dmarc_status = "dmarc=fail (p=nil; dis=none) header.from=" .. tostring(from_domain);
     end
     if debug then print(dmarc_status); end
     vctx:set(msys.core.VCTX_MESS, "dmarc_status",dmarc_status);
     if dmarc_status ~= nil then
       authentication_results = authentication_results .. "; " .. dmarc_status;
     end
+    vctx:set(msys.core.VCTX_MESS, "authentication_results",tostring(authentication_results));
     msg:header('Authentication-Results', authentication_results,"prepend");
     return msys.core.VALIDATE_CONT;
   end
@@ -635,13 +737,14 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
   end
 
   -- set the DMARC status for posterity
-  dmarc_status = "dmarc="..tostring(dmarc).." (p="..tostring(policy_requested).."; dis="..tostring(policy)..")".." d="..tostring(domain).." header.from="..tostring(domain);
+  dmarc_status = "dmarc="..tostring(dmarc).." (p="..tostring(policy_requested).."; dis="..tostring(policy)..")".." header.from="..tostring(from_domain);
   vctx:set(msys.core.VCTX_MESS, "dmarc_status",dmarc_status);
   if debug then print("dmarc_status",dmarc_status); end
     
   if dmarc_status ~= nil then
     authentication_results = authentication_results .. "; " .. dmarc_status;
   end
+  vctx:set(msys.core.VCTX_MESS, "authentication_results",tostring(authentication_results));
   msg:header('Authentication-Results', authentication_results,"prepend");
 
   -- let's log in paniclog because I don't know where else to log
