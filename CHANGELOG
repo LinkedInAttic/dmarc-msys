@@ -1,6 +1,9 @@
 CHANGELOG
 =========
 
+2014/01/24 - Franck Martin
+  - Faster search of the organizational domain using the public suffix list
+
 2014/01/10 - Franck Martin
   - Use the public suffix list to look for the DMARC record
   - Remove d= from authentication-results dmarc section

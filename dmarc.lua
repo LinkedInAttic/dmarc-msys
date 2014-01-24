@@ -15,7 +15,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
    ]]
--- version 1.15
+-- version 1.17
 --
 
 --[[ This requires the dp_config.lua scripts to contain a dmarc entry
@@ -86,7 +86,7 @@ function msys.dp_config.custom_policy.pre_validate_data(msg, ac, vctx)
     print ("DKIM:"..tostring(v));
     ddomain ="";
     idomain = ""
-    dke = explode(";",v);
+    local dke = explode(";",v);
     for i=0,#dke do
       -- print ("dke:"..tostring(dke[i]));
       if string.sub(dke[i],2,3) == "d=" then
@@ -238,80 +238,89 @@ local function dmarc_log(report)
   if debug then print("end of dmarc_log");end
 end
 
-local psl = {}
+psl = nil
 function loadpsl()
+   local psl={};
    file = "/opt/msys/ecelerity/etc/conf/default/lua/pslpuny.txt"
    for line in io.lines(file) do 
-    table.insert(psl,line)
+      local mark="";
+      local domain = line;
+      if string.sub(line,1,1)=="*"  then
+         mark = "*";
+         domain = string.sub(line,3); 
+      end
+      if string.sub(line,1,1)=="!" then
+         mark = "!";
+         domain = string.sub(line,2); 
+      end   
+      psl[domain]=mark;
   end
+  return psl;
 end
 
 function getOrgDomain(domain)
-   if psl==nil or #psl==0 then
-      loadpsl()
+   if psl==nil then
+      psl=loadpsl();
    end
-   domain=tostring(domain)
+   if psl==nil then
+      return(nil);
+   end
+
+   domain=string.lower(tostring(domain));
    if string.sub(domain,1,1)=="." then
-      domain=string.sub(domain,2)
+      domain=string.sub(domain,2);
    end
-   domain="."..string.lower(domain)
-   dname="[a-z0-9\-_]-"
+   if domain=="nil" then
+      return(nil);
+   end
 
-   local matchfound=false
-   orgDomain=""
-   orgDomainCount=0
-
-   for k,v in pairs(psl) do
-      dmatch=v
-      dmark=''
-      dmatch=string.gsub(dmatch,'\-',"%%-")
-      if string.sub(v,1,2) =='*.' then
-         dmatch=dname.."\."..string.sub(v,3)
-         dmark = '*'
-      end
-      if string.sub(v,1,1) =='!' then
-         dmatch=string.sub(v,2)
-         dmark = '!'
-      end      
-      pat="("..dname..")\.("..dmatch..")$"
-      _,_,match,tld = string.find(domain, pat)
-      if match ~= nil then
-         matchfound=true
-         if debug then print (v..": "..domain.." ->"..pat.."<- "..dmark.." - "..dmatch.." | "..tostring(match).." -|- "..tostring(tld)); end
-         if dmark=="*" and match=="" then
-            fdomain=""
-         elseif dmark=="!" and match=="" then
-            fdomain=string.sub(tostring(match).."."..tostring(tld),2)
-         elseif dmark=="!" and match~="" then
-            fdomain=tostring(tld)
-            orgDomain=fdomain
-            break
+   t = explode(".",domain);
+   local found=false;
+   if t ~= nil and #t >= 1 then
+      seekdomain=t[#t];
+      for j=#t,0,-1 do         
+         if psl[seekdomain] then
+            if psl[seekdomain]=="" then
+               if j>=1 then
+                  orgDomain=t[j-1].."."..seekdomain;
+               else
+                  orgDomain=nil;
+               end
+            elseif psl[seekdomain]=="*" then
+               if j>=2 then
+                  orgDomain=t[j-2].."."..t[j-1].."."..seekdomain;
+               else
+                  orgDomain=nil;
+               end
+            elseif psl[seekdomain]=="!" then
+               orgDomain=seekdomain;
+            else
+               orgDomain=seekdomain;
+            end
+            found=true;
          else
-            fdomain=tostring(match).."."..tostring(tld)
+            if found then
+               break;
+            end
          end
-         local _,count = string.gsub(fdomain,"%.","")
-         if count>orgDomainCount then
-            orgDomain=fdomain
-            orgDomainCount=count
+         if j>=1 then
+            seekdomain=t[j-1].."."..seekdomain;
          end
       end
-   end
-   if not matchfound then
-      pat="("..dname.."\."..dname..")$"
-      _,_,match=string.find(domain,pat)
-      if match ~= nil then
-         orgDomain=tostring(match)
+      if found then
+         return(orgDomain);
+      end
+      
+      if #t>=1 then
+         orgDomain=t[#t-1].."."..t[#t]
       else
-         orgDomain=string.sub(domain,2)
+         orgDomain=nil;
       end
+      return(orgDomain)
+   else
+      return(nil);
    end
-   if orgDomain=="" then
-      orgDomain=string.sub(domain,2)
-   end
-   if string.sub(orgDomain,1,1)=="." then
-      orgDomain=string.sub(orgDomain,2)
-   end
-   return orgDomain
+   return(nil);
 end
 
 local function dmarc_find(domain)
@@ -342,7 +351,11 @@ local function dmarc_search(from_domain)
   dmarc_found, dmarc_record = dmarc_find(domain);
   if dmarc_found == false then
     domain = getOrgDomain(domain);
-    dmarc_found, dmarc_record = dmarc_find(domain);
+    if domain ~= nil then
+      dmarc_found, dmarc_record = dmarc_find(domain);
+    else
+      domain = string.lower(from_domain);
+    end
   else
     domain_policy = true;
   end
@@ -595,7 +608,7 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
     local kv_pairs = msys.pcre.split(dmarc_record, "\\s*;\\s*")   
     for k, v in ipairs(kv_pairs) do
       local key, value = string.match(v, "([^=%s]+)%s*=%s*(.+)");
-      local key = string.lower(key);
+      local key = string.lower(tostring(key));
       real_pairs[key] = value;
       if debug then print(key.."="..value); end
     end
@@ -918,3 +931,5 @@ function dmarc_validate_data(msg, ac, vctx, authentication_results)
 
   return ret;
 end
+
+-- vim:ts=2:sw=2:et:
