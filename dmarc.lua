@@ -15,7 +15,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
    ]]
--- version 1.17
+-- version 1.19
 --
 
 --[[ This requires the dp_config.lua scripts to contain a dmarc entry
@@ -574,6 +574,8 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
     print("envelope_domain",envelope_domain);
   end
 
+  local ip = ip_from_addr_and_port(tostring(ac.remote_addr));
+
   -- Check SPF and alignment
   local spf_alignement = "none";
   local spf_status = vctx:get(msys.core.VCTX_MESS, "spf_status");
@@ -761,7 +763,7 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
   msg:header('Authentication-Results', authentication_results,"prepend");
 
   -- let's log in paniclog because I don't know where else to log
-  local report = "DMARC1@"..tostring(msys.core.get_now_ts()).."@"..tostring(msg.id).."@"..tostring(domain).."@"..ip_from_addr_and_port(tostring(ac.remote_addr))..
+  local report = "DMARC1@"..tostring(msys.core.get_now_ts()).."@"..tostring(msg.id).."@"..tostring(domain).."@"..ip..
   "@"..tostring(real_pairs.adkim).."@"..tostring(real_pairs.aspf).."@"..tostring(real_pairs.p).."@"..tostring(real_pairs.sp)..
   "@"..tostring(policy_requested).."@"..tostring(real_pairs.pct).."@"..tostring(policy).."@"..tostring(dmarc_dkim).."@"..tostring(dmarc_spf)..
   "@"..tostring(from_domain).."@SPF@"..tostring(envelope_domain).."@"..tostring(spf_status).."@DKIM";
@@ -809,7 +811,7 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
         if policy == "reject" then
           delivery = "reject";
         end
-        status,res = msys.runInPool("IO", function () dmarc_forensic(real_pairs["ruf"],domain,dmarc_status, ip_from_addr_and_port(tostring(ac.remote_addr)), delivery, msg); end, true);
+        status,res = msys.runInPool("IO", function () dmarc_forensic(real_pairs["ruf"],domain,dmarc_status, ip, delivery, msg); end, false);
       end
     end
   end
@@ -819,12 +821,12 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
     local mlm = msg:header('list-id');
     if mlm ~= nil and #mlm>=1 then
       -- we found a list-id let's note that as we may want to whitelist
-      print("DMARC MLM whitelist potential List-Id:"..mlm[1].." "..ip_from_addr_and_port(tostring(ac.remote_addr)));
+      print("DMARC MLM whitelist potential List-Id:"..mlm[1].." "..ip);
     end
     local mlm = msg:header('list-post');
     if mlm ~= nil and #mlm>=1 then
       -- we found a list-id let's note that as we may want to whitelist
-      print("DMARC MLM whitelist potential List-Post:"..mlm[1].." "..ip_from_addr_and_port(tostring(ac.remote_addr)));
+      print("DMARC MLM whitelist potential List-Post:"..mlm[1].." "..ip);
     end
     return vctx:pbp_disconnect(550, "5.7.1 Email rejected per DMARC policy for "..tostring(domain));
   end

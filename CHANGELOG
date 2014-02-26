@@ -1,6 +1,9 @@
 CHANGELOG
 =========
 
+2014/02/26 - Franck Martin
+  - avoid thread data mixup when sending failure reports
+
 2014/01/24 - Franck Martin
   - Faster search of the organizational domain using the public suffix list
 
