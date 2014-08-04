@@ -15,7 +15,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
    ]]
--- version 1.19
+-- version 1.21 (for msys>=3.6)
 --
 
 --[[ This requires the dp_config.lua scripts to contain a dmarc entry
@@ -52,94 +52,80 @@ msys.dp_config.dmarc = {
 };
 
 The following functions are required in custom_policy.lua, 
-this will load domains that pass dkim in dmarc_dkim_domains
-and all the domains that have a DKIM-Signature header
-note: ec_dkim_domains returns the domain in i= if found otherwise d= 
+this will load domains that pass dkim in domains_good 
+and the one that fail in domains_bad
 
-siv/dmarc_dkim.siv
--- siv-begin
-$domains = ec_dkim_domains;
+It also starts to construct the authentication-results header
 
-if isset $domains 0 {
-  $domains_string = join " " $domains;
-} else {
-  $domains_string = "";
-}
- 
-vctx_mess_set "dmarc_dkim_domains" $domains_string;
--- siv-end
+require("opendkim.dkim");
+require("msys.validate.opendkim");
 
-/opt/msys/ecelerity/etc/conf/default/lua/dmarc-msys.lua
 function msys.dp_config.custom_policy.pre_validate_data(msg, ac, vctx)
--- the following has a memory leak so we use a sieve script instead
---  local domains = msys.validate.dkim.get_domains(msg, vctx);
---  vctx:set(msys.core.VCTX_MESS, "dmarc_dkim_domains",domains);
--- 
---  
-  --- see if there are DKIM headers in the message                                 
-  local dkim_domains ="";
-  local dkim_domainsi = "";
-  local dk=msg:header('DKIM-Signature');
-  local ddomain = "";
-  local idomain = "";
-  for k,v in pairs(dk) do
-    print ("DKIM:"..tostring(v));
-    ddomain ="";
-    idomain = ""
-    local dke = explode(";",v);
-    for i=0,#dke do
-      -- print ("dke:"..tostring(dke[i]));
-      if string.sub(dke[i],2,3) == "d=" then
-         ddomain = string.lower(string.sub(dke[i],4));
-      end
-      if string.sub(dke[i],2,3) == "i=" then
-         local itag = string.lower(string.sub(dke[i],4));
-         local var = msys.pcre.match(itag,"^.*@(?<domain>\\w+)$");
-         if var then
-           idomain = var["domain"];
-         end
+
+--- see if there are DKIM headers in the message 
+
+  local auth_dkim ="";
+  local domains_good =""
+  local domains_bad =""
+  local num = 0;
+  local stat;
+  local dkim_sig;
+  local dkim,stat = msys.validate.opendkim.verify(msg);
+  num,stat = msys.validate.opendkim.get_num_sigs(dkim);
+  -- create loop controlled by num 
+  if num ~= nil and num > 0 then
+    for i = 0, num-1 do
+      dkim_sig,stat = msys.validate.opendkim.get_sig(dkim, i);
+      -- now do something with the signature
+      local size = msys.validate.opendkim.get_sig_keysize(dkim_sig);
+      local domain=msys.validate.opendkim.get_sig_domain(dkim_sig);
+      local dkim_err=msys.validate.opendkim.get_sig_errorstr(dkim_sig)
+      if debug then print("DKIM_STAT:"..tostring(stat).." size:"..tostring(size).." error:"..tostring(dkim_err)); end
+
+      if size>=1024 and tostring(dkim_err)=="no signature error" then
+        if domains=="" then
+          domains_good=tostring(domain);
+        else
+          domains_good=domains_good.." "..tostring(domain);
+        end
+        if auth_dkim =="" then
+          auth_dkim="dkim=pass header.d=" .. tostring(domain);
+        else
+          auth_dkim=auth_dkim.."; dkim=pass header.d=" .. tostring(domain);
+        end
+      else
+        if domains_bad =="" then
+          domains_bad=domain;
+        else
+          domains_bad=domains_bad.." "..domain;
+        end
+        if auth_dkim =="" then
+          auth_dkim="dkim=fail ("..tostring(dkim_err)..") header.d=" .. tostring(domain);
+        else
+          auth_dkim=auth_dkim.."; dkim=fail ("..tostring(dkim_err)..") header.d=" .. tostring(domain);
+        end
       end
     end
-    dkim_domains =  dkim_domains .. " " .. ddomain;
-    if idomain ~= "" then
-      dkim_domainsi =  dkim_domainsi .. " " .. idomain;
-    else
-      dkim_domainsi =  dkim_domainsi .. " " .. ddomain;
-    end
-  end  
-  vctx:set(msys.core.VCTX_MESS, "dkim_domains",dkim_domains);
-  vctx:set(msys.core.VCTX_MESS, "dkim_domainsi",dkim_domainsi);
+  end 
   
-  -- rewriting authentication results to follow RFC5451
+  vctx:set(msys.core.VCTX_MESS, "domains_good",domains_good);
+  vctx:set(msys.core.VCTX_MESS, "domains_bad",domains_bad);
+  
+   -- rewriting authentication results to follow RFC5451
   local spf = msg:context_get(msys.core.ECMESS_CTX_MESS,"spf_status");
-  local domains = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "dmarc_dkim_domains"), "\\s+");
-  local dkim_domains = msys.pcre.split(dkim_domains, "\\s+");
-  local dkim_domainsi = msys.pcre.split(dkim_domainsi, "\\s+");
+  local helo_domain = string.lower(msys.expandMacro("%{vctx_conn:ehlo_domain}"));
 
   local mailfrom = msg:mailfrom();
   local hostname = tostring(gethostname());
   
-  local authentication_results = tostring(hostname) .. "; iprev=pass policy.iprev="..ip_from_addr_and_port(tostring(ac.remote_addr)).."; spf="..tostring(spf).." smtp.mailfrom="..tostring(mailfrom);
+  local authentication_results = tostring(hostname) .. "; iprev=pass policy.iprev=\""..ip_from_addr_and_port(tostring(ac.remote_addr)).."\"; spf="..tostring(spf).." smtp.mailfrom=\""..tostring(mailfrom).."\" smtp.helo=\""..tostring(helo_domain).."\"";
 
-  if dkim_domainsi ~= nil and #dkim_domainsi >= 1 then
-    for i=1,#dkim_domainsi do
-        local found=false;
-        if domains ~= nil and #domains >= 1 then
-          for j=1,#domains do
-            if domains[j] == dkim_domainsi[i] then
-              found=true;
-            end
-          end
-        end
-        if found then
-          authentication_results = authentication_results .. "; dkim=pass header.d=" .. tostring(dkim_domains[i]);
-        else
-          authentication_results = authentication_results .. "; dkim=fail header.d=" .. tostring(dkim_domains[i]);
-        end
-    end
+  if auth_dkim~="" then
+    authentication_results = authentication_results.."; "..auth_dkim;
   else
-    authentication_results = authentication_results .. "; dkim=neutral (message not signed) header.d=none";
+    authentication_results = authentication_results .. "; dkim=none (message not signed) header.d=none";
   end
+
   -- remove all authentication-results as we will put ours
   msg:header('Authentication-Results',"");
   
@@ -152,13 +138,7 @@ function msys.dp_config.custom_policy.pre_validate_data(msg, ac, vctx)
   return ret;
 end
 
-And don't forget to load the sieve script and the lua module in the ecelerity.conf
-
-sieve "sieve1" {
-  Script data_phase1 {
-     Source = "siv/dmarc_dkim.siv"
-  }
-}
+And don't forget to load the lua module in the ecelerity.conf
 
 scriptlet "scriptlet" {
   # this loads default scripts to support enhanced control channel features
@@ -175,11 +155,9 @@ scriptlet "scriptlet" {
 require("msys.pbp");
 require("msys.core");
 require("dp_config");
-require("msys.validate.dkim");
 require("msys.extended.vctx");
 require("msys.extended.message");
 
-local mod = {};
 local jlog;
 local debug = false;
 
@@ -238,7 +216,7 @@ local function dmarc_log(report)
   if debug then print("end of dmarc_log");end
 end
 
-psl = nil
+_OSTLS.psl = nil
 function loadpsl()
    local psl={};
    file = "/opt/msys/ecelerity/etc/conf/default/lua/pslpuny.txt"
@@ -259,10 +237,10 @@ function loadpsl()
 end
 
 function getOrgDomain(domain)
-   if psl==nil then
-      psl=loadpsl();
+   if _OSTLS.psl==nil then
+      _OSTLS.psl=loadpsl();
    end
-   if psl==nil then
+   if _OSTLS.psl==nil then
       return(nil);
    end
 
@@ -279,20 +257,20 @@ function getOrgDomain(domain)
    if t ~= nil and #t >= 1 then
       seekdomain=t[#t];
       for j=#t,0,-1 do         
-         if psl[seekdomain] then
-            if psl[seekdomain]=="" then
+         if _OSTLS.psl[seekdomain] then
+            if _OSTLS.psl[seekdomain]=="" then
                if j>=1 then
                   orgDomain=t[j-1].."."..seekdomain;
                else
                   orgDomain=nil;
                end
-            elseif psl[seekdomain]=="*" then
+            elseif _OSTLS.psl[seekdomain]=="*" then
                if j>=2 then
                   orgDomain=t[j-2].."."..t[j-1].."."..seekdomain;
                else
                   orgDomain=nil;
                end
-            elseif psl[seekdomain]=="!" then
+            elseif _OSTLS.psl[seekdomain]=="!" then
                orgDomain=seekdomain;
             else
                orgDomain=seekdomain;
@@ -592,8 +570,8 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
 
   -- Check DKIM and alignment
   local dkim_alignement = "none";
-  if debug and dmarc_found then print("dmarc_dkim_domains:"..tostring(vctx:get(msys.core.VCTX_MESS, "dmarc_dkim_domains"))); end
-  local dkim_domains = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "dmarc_dkim_domains"), "\\s+");
+  if debug and dmarc_found then print("dmarc_dkim_domains:"..tostring(vctx:get(msys.core.VCTX_MESS, "domains_good"))); end
+  local dkim_domains = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "domains_good"), "\\s+");
   for k, dkim_domain in ipairs(dkim_domains) do
     if dkim_domain == from_domain then
       dkim_alignement = "strict";
@@ -768,34 +746,25 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
   "@"..tostring(policy_requested).."@"..tostring(real_pairs.pct).."@"..tostring(policy).."@"..tostring(dmarc_dkim).."@"..tostring(dmarc_spf)..
   "@"..tostring(from_domain).."@SPF@"..tostring(envelope_domain).."@"..tostring(spf_status).."@DKIM";
 
-  if debug then print("dkim_domains:"..tostring(vctx:get(msys.core.VCTX_MESS, "dkim_domains"))); end
-  local found_dkim_domains = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "dkim_domains"), "\\s+");
-  local found_dkim_domainsi = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "dkim_domainsi"), "\\s+");
+  if debug then print("dkim_domains_good:"..tostring(vctx:get(msys.core.VCTX_MESS, "domains_good"))); end
+  if debug then print("dkim_domains_bad:"..tostring(vctx:get(msys.core.VCTX_MESS, "domains_bad"))); end
+  local domains_good = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "domains_good"), "\\s+");
+  local domains_bad = msys.pcre.split(vctx:get(msys.core.VCTX_MESS, "domains_bad"), "\\s+");
 
-  if found_dkim_domainsi ~= nil and #found_dkim_domainsi >= 1 then
-    for i=1,#found_dkim_domainsi do
-      local found=false;
-      if dkim_domains ~= nil and #dkim_domains >= 1 then
-        for j=1,#dkim_domains do
-          if debug then print(">"..found_dkim_domainsi[i].."<>"..dkim_domains[j].."<>"..found_dkim_domains[i].."<"); end
-          if dkim_domains[j] == found_dkim_domainsi[i] then
-            found=true;
-          end
-        end
-      end
-      if found then
-        report = report .. "@" .. found_dkim_domains[i] .. "@pass";
-      else
-        report = report .. "@" .. found_dkim_domains[i] .. "@fail";
-      end
-    end
-  else
-    if dkim_domains ~= nil and #dkim_domains >= 1 then
-      report = report .. "@" .. dkim_domains[1] .. "@pass";
-    else
-      report = report .. "@@none";
+  if domains_good ~= nil and #domains_good >= 1 then
+    for i=1,#domains_good do
+      report = report .. "@" .. domains_good[i] .. "@pass";
     end
   end
+  if domains_bad ~= nil and #domains_bad >= 1 then
+    for i=1,#domains_bad do
+      report = report .. "@" .. domains_bad[i] .. "@fail";
+    end
+  end
+  if #domains_bad < 1 and #domains_good <1 then
+    report = report .. "@@none";
+  end
+
   report = report .."\n";
   if debug then print("report",report); end
   status,res = msys.runInPool("IO", function () dmarc_log(report); end, true);
@@ -811,7 +780,7 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
         if policy == "reject" then
           delivery = "reject";
         end
-        status,res = msys.runInPool("IO", function () dmarc_forensic(real_pairs["ruf"],domain,dmarc_status, ip, delivery, msg); end, false);
+        status,res = msys.runInPool("IO", function () dmarc_forensic(real_pairs["ruf"],domain,dmarc_status, ip, delivery, msg); end, true);
       end
     end
   end

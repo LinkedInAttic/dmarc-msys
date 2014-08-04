@@ -23,6 +23,8 @@ How to install
 
 This requires momentum-receiving from Message Systems.
 
+dmarc.lua >= 1.21 requires momentum-receiving >=3.6
+
 Follow instructions in the comments at the beginning of the lua script.
 
 Download the Public Suffix list from http://publicsuffix.org/ and convert it

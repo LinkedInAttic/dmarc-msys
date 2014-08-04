@@ -1,6 +1,12 @@
 CHANGELOG
 =========
 
+2014/08/04 - Franck Martin
+  - This version uses opendkim library introduced in msys >= 3.6
+  - Works with supercharger and protect shared variables using _OSTLS in multi-threading environment
+  - fixed dkim=neutral -> none
+  - Double quote values in AR header, so : in IPv6 addresses are correctly escaped as well as empty values
+
 2014/02/26 - Franck Martin
   - avoid thread data mixup when sending failure reports
 
