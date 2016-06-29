@@ -34,3 +34,7 @@ or update the loadpsl() function
 
 Install dmarc_report.py on the manager with a daily cron job to process
 dmarc logs and send aggregate reports
+
+Edit the variable imailfrom
+
+It is recommended to send reports from dedicated separate IPs.

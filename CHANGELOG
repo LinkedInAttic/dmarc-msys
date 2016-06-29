@@ -1,6 +1,12 @@
 CHANGELOG
 =========
 
+2016/06/28 - Franck Martin
+  - This version uses the idn library, so it can work with IDN and EAI
+  - Fixes an issue where the RFC5321.MailFrom and RFC5322.From are subdomains of the same org domain (thanks to Michiel van de Vis for the report)
+  - Fixes an issue when some domains returned needs space trimming
+  - Storing the current authentication-results in VCTX-MESS before rejecting the message so it appears in rejectlog
+
 2014/08/04 - Franck Martin
   - This version uses opendkim library introduced in msys >= 3.6
   - Works with supercharger and protect shared variables using _OSTLS in multi-threading environment

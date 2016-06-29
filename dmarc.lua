@@ -1,7 +1,7 @@
 --
 -- DMARC parsing validating and reporting
 -- 
---[[ Copyright 2012 Linkedin
+--[[ Copyright 2012-2016 Linkedin
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
    ]]
--- version 1.21 (for msys>=3.6)
+-- version 1.25 (for msys>=3.6 with EAI support)
 --
 
 --[[ This requires the dp_config.lua scripts to contain a dmarc entry
@@ -157,6 +157,7 @@ require("msys.core");
 require("dp_config");
 require("msys.extended.vctx");
 require("msys.extended.message");
+require("msys.idn");
 
 local jlog;
 local debug = false;
@@ -164,6 +165,11 @@ local debug = false;
 if msys.dp_config.dmarc.debug ~= nil and
   msys.dp_config.dmarc.debug == true then
   debug = true;
+end
+
+-- need to trim a domain sometimes
+local function trim(s)
+  return s:match'^()%s*$' and '' or s:match'^%s*(.*%S)'
 end
 
 -- explode(seperator, string)
@@ -244,6 +250,9 @@ function getOrgDomain(domain)
       return(nil);
    end
 
+   local orgDomain;
+   local seekdomain;
+
    domain=string.lower(tostring(domain));
    if string.sub(domain,1,1)=="." then
       domain=string.sub(domain,2);
@@ -323,16 +332,17 @@ local function dmarc_search(from_domain)
   local dmarc_record = "";
 
   local domain;
+  local orgDomain;
   local domain_policy = false;
 
   domain = string.lower(from_domain);
+  orgDomain = getOrgDomain(domain);
   dmarc_found, dmarc_record = dmarc_find(domain);
   if dmarc_found == false then
-    domain = getOrgDomain(domain);
-    if domain ~= nil then
-      dmarc_found, dmarc_record = dmarc_find(domain);
+    if orgDomain ~= nil then
+      dmarc_found, dmarc_record = dmarc_find(orgDomain);
     else
-      domain = string.lower(from_domain);
+      orgDomain = string.lower(from_domain);
     end
   else
     domain_policy = true;
@@ -341,9 +351,10 @@ local function dmarc_search(from_domain)
   if debug and dmarc_found then 
     print("dmarc_record:"..tostring(dmarc_record));
     print("domain:"..tostring(domain));
+    print("orgDomain:"..tostring(orgDomain));
     print("domain_policy:"..tostring(domain_policy));
   end  
-  return dmarc_found,dmarc_record,domain,domain_policy;
+  return dmarc_found,dmarc_record,domain,orgDomain,domain_policy;
 end
 
 local function dmarc_search2(from_domain)
@@ -398,7 +409,7 @@ local function dmarc_search2(from_domain)
     print("domain:"..tostring(domain));
     print("domain_policy:"..tostring(domain_policy));
   end  
-  return dmarc_found,dmarc_record,domain,domain_policy;
+  return dmarc_found,dmarc_record,domain,domain,domain_policy;
 end
 
 local function ruf_mail_list(ruf,domain)
@@ -448,7 +459,7 @@ local function dmarc_forensic(ruf,domain,dmarc_status, ip, delivery, msg)
   local headers = {};
   
   local imsg = msys.core.ec_message_new(now);
-  local imailfrom = "dmarc-noreply@linkedin.com";
+  local imailfrom = "dmarc-noreply@example.com";
   local mailfrom = msg:mailfrom();
   local rcptto = msg:rcptto();
   local msgidtbl = msg:header("Message-Id");
@@ -458,9 +469,9 @@ local function dmarc_forensic(ruf,domain,dmarc_status, ip, delivery, msg)
   end
   local today = os.date("%a, %d %b %Y %X %z")
 
-  headers["To"] = "dmarc-noreply@linkedin.com";
-  headers["From"] = "dmarc-noreply@linkedin.com";
-  headers["Subject"] = "DMARC Forensic report for "..tostring(domain).." Mail-From:"..tostring(mailfrom).." IP:"..tostring(ip);
+  headers["To"] = imailfrom;
+  headers["From"] = imailfrom;
+  headers["Subject"] = "DMARC Failure report for "..tostring(domain).." Mail-From:"..tostring(mailfrom).." IP:"..tostring(ip);
 
   local parttext = "Content-Type: text/plain; charset=\"US-ASCII\"\r\n"..
   "Content-Transfer-Encoding: 7bit\r\n\r\n"..
@@ -546,7 +557,7 @@ local function dmarc_forensic(ruf,domain,dmarc_status, ip, delivery, msg)
 
 end
 
-local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, envelope_domain, dmarc_found, dmarc_record, domain, domain_policy)
+local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, envelope_domain, dmarc_found, dmarc_record, domain, orgDomain, domain_policy)
   if debug and dmarc_found then
     print("from_domain",from_domain);
     print("envelope_domain",envelope_domain);
@@ -561,8 +572,7 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
   if spf_status ~= nil and spf_status == "pass" then
     if from_domain == envelope_domain then
       spf_alignement="strict";
-    elseif string.find("."..from_domain, "."..envelope_domain, 1, true) ~=nil or 
-      string.find("."..envelope_domain, "."..from_domain, 1, true) ~=nil then
+    elseif string.sub("."..envelope_domain,-string.len(orgDomain)-1) == "."..orgDomain then
       spf_alignement = "relaxed";
     end    
   end
@@ -576,8 +586,7 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
     if dkim_domain == from_domain then
       dkim_alignement = "strict";
       break;
-    elseif string.find("."..from_domain, "."..dkim_domain, 1, true) ~=nil or 
-      string.find("."..dkim_domain, "."..from_domain, 1, true) ~=nil then
+    elseif string.sub("."..dkim_domain,-string.len(orgDomain)-1) == "."..orgDomain then
       dkim_alignement = "relaxed";
     end        
   end
@@ -769,23 +778,29 @@ local function dmarc_work(msg, ac, vctx, authentication_results, from_domain, en
   if debug then print("report",report); end
   status,res = msys.runInPool("IO", function () dmarc_log(report); end, true);
   
-  -- send forensic report
+  -- send failure report
   if dmarc=="fail" and (policy ~= "local_policy" and policy ~= "trusted_forwarder" and policy ~= "mailing_list") then
     if msys.dp_config.dmarc.ruf.enable ~= nil and
       msys.dp_config.dmarc.ruf.enable == true then
       if real_pairs["ruf"] ~= nil and real_pairs["ruf"] ~= "" then
         real_pairs["ruf"] = string.lower(real_pairs["ruf"]);
-        -- we have a ruf so we could send a forensic report
+        -- we have a ruf so we could send a failure report
         local delivery = "delivered";
         if policy == "reject" then
           delivery = "reject";
         end
-        status,res = msys.runInPool("IO", function () dmarc_forensic(real_pairs["ruf"],domain,dmarc_status, ip, delivery, msg); end, true);
+        local snap = msg:snapshot();
+        status,res = msys.runInPool("IO", function () dmarc_forensic(real_pairs["ruf"],domain,dmarc_status, ip, delivery, snap); snap:free(); end, true);
       end
     end
   end
   
   -- and now we can enforce it  
+  if policy == "quarantine" then
+    --You should have a rule in your MTA/client to deliver in the spam folder using this header
+    msg:header('X-Quarantine', "yes","prepend");
+  end
+
   if policy == "reject" then
     local mlm = msg:header('list-id');
     if mlm ~= nil and #mlm>=1 then
@@ -814,6 +829,7 @@ function dmarc_validate_data(msg, ac, vctx, authentication_results)
   
   -- various checks regarding dmarc
   if #headerfrom > 1 then
+    vctx:set(msys.core.VCTX_MESS, "authentication_results",tostring(authentication_results));
     msg:header('Authentication-Results', authentication_results,"prepend");
     return vctx:pbp_disconnect(550, "5.7.1 An email with more than one From: header is invalid cf RFC5322 3.6");
   end
@@ -824,34 +840,38 @@ function dmarc_validate_data(msg, ac, vctx, authentication_results)
     if mailfrom ~= nil and mailfrom ~= "" then
       -- this is not a bounce
       if #headerfrom < 1 then
+        vctx:set(msys.core.VCTX_MESS, "authentication_results",tostring(authentication_results));
         msg:header('Authentication-Results', authentication_results,"prepend");
         return vctx:pbp_disconnect(550, "5.7.1 Can't find a RFC5322 From: header, this is annoying with DMARC and required by RFC5322 3.6");
       else
+        vctx:set(msys.core.VCTX_MESS, "authentication_results",tostring(authentication_results));
         msg:header('Authentication-Results', authentication_results,"prepend");
         return vctx:pbp_disconnect(550, "5.7.1 RFC5322 3.6.2 requires a domain in a correctly formed header From: "..tostring(headerfrom[1]));
       end
     else
       -- this is a bounce and there is no domain to tie to DMARC so bail out.
+      vctx:set(msys.core.VCTX_MESS, "authentication_results",tostring(authentication_results));
       msg:header('Authentication-Results', authentication_results,"prepend");
       return msys.core.VALIDATE_CONT;
     end
   end
-  
+
   if #domains > 1 then
     if #domains > 2 or string.lower(domains[1]) ~= string.lower(domains[2]) then
+      vctx:set(msys.core.VCTX_MESS, "authentication_results",tostring(authentication_results));
       msg:header('Authentication-Results', authentication_results,"prepend");
       return vctx:pbp_disconnect(550, "5.7.1 It is difficult to do DMARC with an email with too many domains in the header From: "..tostring(headerfrom[1]));
     end
   end
   
-  local from_domain = string.lower(domains[1]);
+  local from_domain = string.lower(trim(tostring(msys.idn.to_idn(domains[1]))));
   local envelope_domain = string.lower(vctx:get(msys.core.VCTX_MESS,
    msys.core.STANDARD_KEY_MAILFROM_DOMAIN));
 
   if envelope_domain == "" then
     envelope_domain = string.lower(msys.expandMacro("%{vctx_conn:ehlo_domain}"));
   end
-  
+
   -- let's check the domain is emailable
   if msys.dp_config.dmarc.check_domain ~= nil and
     msys.dp_config.dmarc.check_domain == true then
@@ -873,7 +893,9 @@ function dmarc_validate_data(msg, ac, vctx, authentication_results)
           local to = msg:header('To');
           print ("5.7.1 Cannot email domain in From: "..tostring(headerfrom[1]).." To: "..tostring(to[1]).." Subject: "..tostring(subject[1]));
         else
+          vctx:set(msys.core.VCTX_MESS, "authentication_results",tostring(authentication_results));
           msg:header('Authentication-Results', authentication_results,"prepend");
+          print ("5.7.1 Cannot email domain in From: "..tostring(headerfrom[1]).." Domain: "..tostring(domains[1]).." idn: "..tostring(msys.idn.to_idn(domains[1])));
           return vctx:pbp_disconnect(550, "5.7.1 Cannot email domain in From: "..tostring(headerfrom[1]));
         end
       else
@@ -883,6 +905,7 @@ function dmarc_validate_data(msg, ac, vctx, authentication_results)
           local to = msg:header('To');
           print ("Check domain temporary resolution failure in From: "..tostring(headerfrom[1]).." To: "..tostring(to[1]).." Subject: "..tostring(subject[1]));
         else
+          vctx:set(msys.core.VCTX_MESS, "authentication_results",tostring(authentication_results));
           msg:header('Authentication-Results', authentication_results,"prepend");
           return vctx:pbp_action(451, "Check domain temporary resolution failure in From: "..tostring(headerfrom[1]));
         end
@@ -893,14 +916,15 @@ function dmarc_validate_data(msg, ac, vctx, authentication_results)
 
   -- Now let's find if the domain has a DMARC record.
   -- we do it here as it is more efficient than in the CPU pool
-  local dmarc_found, dmarc_record, domain, domain_policy = dmarc_search(from_domain);
+  local dmarc_found, dmarc_record, domain, orgDomain, domain_policy = dmarc_search(from_domain);
   
   -- If we get here we have exactly one result in results.
   local status, ret = msys.runInPool("CPU", function()
-    return dmarc_work(msg, ac, vctx, authentication_results, from_domain, envelope_domain, dmarc_found, dmarc_record, domain, domain_policy);
+    return dmarc_work(msg, ac, vctx, authentication_results, from_domain, envelope_domain, dmarc_found, dmarc_record, domain, orgDomain, domain_policy);
     end);
 
   return ret;
 end
 
 -- vim:ts=2:sw=2:et:
+
